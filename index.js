@@ -11,8 +11,11 @@ import { HttpsProxyAgent } from 'https-proxy-agent';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 class WizoMiner {
-  constructor(token, proxy = null, id) {
+  static allTokens = [];
+
+  constructor(token, refresh_token, proxy = null, id) {
     this.token = token;
+    this.refresh_token = refresh_token;
     this.proxy = proxy;
     this.id = id;
     this.userInfo = {};
@@ -91,6 +94,54 @@ class WizoMiner {
     };
   }
 
+  async refreshToken() {
+    try {
+      this.addLog(chalk.yellow('Token expired, attempting to refresh'));
+      const payload = { refresh_token: this.refresh_token };
+      const response = await axios.post('https://inymxsvpmkfwnlmowzpi.supabase.co/auth/v1/token?grant_type=refresh_token', payload, {
+        headers: {
+          'accept': '*/*',
+          'accept-encoding': 'gzip, deflate, br, zstd',
+          'accept-language': 'en-GB,en-US;q=0.9,en;q=0.8',
+          'apikey': 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImlueW14c3ZwbWtmd25sbW93enBpIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NDY4NzQxNDMsImV4cCI6MjA2MjQ1MDE0M30.cf5QLGWwACBbUwNfZMwqoIEGXAEyKTRQiBzd3LPV-KI',
+          'authorization': `Bearer ${this.token}`,
+          'cache-control': 'no-cache',
+          'content-type': 'application/json;charset=UTF-8',
+          'origin': 'https://wizolayer.xyz',
+          'pragma': 'no-cache',
+          'priority': 'u=1, i',
+          'referer': 'https://wizolayer.xyz/',
+          'sec-ch-ua': '"Chromium";v="134", "Not:A-Brand";v="24", "Opera";v="119"',
+          'sec-ch-ua-mobile': '?0',
+          'sec-ch-ua-platform': '"Windows"',
+          'sec-fetch-dest': 'empty',
+          'sec-fetch-mode': 'cors',
+          'sec-fetch-site': 'cross-site',
+          'user-agent': this.getRandomUserAgent(),
+          'x-client-info': 'supabase-js-web/2.49.4',
+          'x-supabase-api-version': '2024-01-01',
+        },
+        ...(this.proxy ? {
+          httpsAgent: this.proxy.type === 'socks5' ? new SocksProxyAgent(this.proxy.url) : new HttpsProxyAgent(this.proxy.url),
+          httpAgent: this.proxy.type === 'socks5' ? new SocksProxyAgent(this.proxy.url) : new HttpsProxyAgent(this.proxy.url),
+        } : {}),
+      });
+      const data = response.data;
+      this.token = data.access_token;
+      this.refresh_token = data.refresh_token;
+      const tokenIndex = WizoMiner.allTokens.findIndex(t => t.id === this.id);
+      if (tokenIndex !== -1) {
+        WizoMiner.allTokens[tokenIndex].token = this.token;
+        WizoMiner.allTokens[tokenIndex].refresh_token = this.refresh_token;
+      }
+      await WizoMiner.saveTokens(WizoMiner.allTokens);
+      this.addLog(chalk.green('Token refreshed successfully'));
+    } catch (error) {
+      this.addLog(chalk.red(`Failed to refresh token: ${error.message}`));
+      throw error;
+    }
+  }
+
   async fetchUserInfo() {
     try {
       const payload = { "in_referral_code": null, "in_half_linked_wallet": null };
@@ -136,12 +187,21 @@ class WizoMiner {
       this.addLog(chalk.green('User info fetched successfully'));
       this.refreshDisplay();
     } catch (error) {
-      this.addLog(chalk.red(`Failed to fetch user info: ${error.message}`));
       if (error.response && error.response.status === 401) {
-        this.addLog(chalk.red('Invalid token: Unauthorized (401)'));
+        this.addLog(chalk.red('Invalid token: Unauthorized (401), attempting to refresh token'));
+        try {
+          await this.refreshToken();
+          await this.fetchUserInfo();
+        } catch (refreshError) {
+          this.addLog(chalk.red('Failed to refresh token, please check refresh_token'));
+          this.status = 'Error';
+          this.refreshDisplay();
+        }
+      } else {
+        this.addLog(chalk.red(`Failed to fetch user info: ${error.message}`));
         this.status = 'Error';
+        this.refreshDisplay();
       }
-      this.refreshDisplay();
     }
   }
 
@@ -177,9 +237,17 @@ class WizoMiner {
         this.addLog(chalk.yellow(`Waiting ${delay / 1000} seconds before next task`));
         await new Promise(resolve => setTimeout(resolve, delay));
       } catch (error) {
-        this.addLog(chalk.red(`Failed to complete task "${taskName}": ${error.message}`));
         if (error.response && error.response.status === 401) {
-          this.addLog(chalk.red(`Invalid token for task "${taskName}" completion: Unauthorized (401)`));
+          this.addLog(chalk.red(`Invalid token for task "${taskName}": Unauthorized (401), attempting to refresh token`));
+          try {
+            await this.refreshToken();
+            await this.checkAndCompleteTasks();
+            break;
+          } catch (refreshError) {
+            this.addLog(chalk.red(`Failed to refresh token for task "${taskName}"`));
+          }
+        } else {
+          this.addLog(chalk.red(`Failed to complete task "${taskName}": ${error.message}`));
         }
       }
     }
@@ -222,12 +290,21 @@ class WizoMiner {
       this.startCountdown();
       this.refreshDisplay();
     } catch (error) {
-      this.addLog(chalk.red(`Failed to start mining: ${error.message}`));
       if (error.response && error.response.status === 401) {
-        this.addLog(chalk.red('Invalid token: Unauthorized (401)'));
+        this.addLog(chalk.red('Invalid token: Unauthorized (401), attempting to refresh token'));
+        try {
+          await this.refreshToken();
+          await this.startMining();
+        } catch (refreshError) {
+          this.addLog(chalk.red('Failed to refresh token'));
+          this.status = 'Error';
+          this.refreshDisplay();
+        }
+      } else {
+        this.addLog(chalk.red(`Failed to start mining: ${error.message}`));
         this.status = 'Error';
+        this.refreshDisplay();
       }
-      this.refreshDisplay();
     }
   }
 
@@ -244,17 +321,24 @@ class WizoMiner {
         });
         this.addLog(chalk.greenBright('Mining Synced Successfully'));
       } catch (error) {
-        this.addLog(chalk.red(`Failed to sync mining: ${error.message}`));
         if (error.response && error.response.status === 401) {
-          this.addLog(chalk.red('Invalid token: Unauthorized (401)'));
-          this.status = 'Error';
-          this.refreshDisplay();
+          this.addLog(chalk.red('Invalid token: Unauthorized (401), attempting to refresh token'));
+          try {
+            await this.refreshToken();
+          } catch (refreshError) {
+            this.addLog(chalk.red('Failed to refresh token'));
+            this.status = 'Error';
+            this.refreshDisplay();
+            clearInterval(this.miningInterval);
+          }
+        } else {
+          this.addLog(chalk.red(`Failed to sync mining: ${error.message}`));
         }
       }
     }, 30000);
   }
 
-    startCountdown() {
+  startCountdown() {
     if (this.countdownInterval) clearInterval(this.countdownInterval);
     this.countdownInterval = setInterval(async () => {
       if (this.userInfo.mining_active && !this.banned) {
@@ -333,6 +417,36 @@ class WizoMiner {
     this.uiScreen.render();
   }
 
+  static async loadTokens() {
+    try {
+      const filePath = path.join(__dirname, 'token.json');
+      const data = await fs.readFile(filePath, 'utf8');
+      const tokens = JSON.parse(data);
+      if (!Array.isArray(tokens) || tokens.length === 0) {
+        console.error('[ERROR] token.json is empty or invalid');
+        return [];
+      }
+      WizoMiner.allTokens = tokens.map((tokenObj, index) => ({
+        id: index + 1,
+        token: tokenObj.token,
+        refresh_token: tokenObj.refresh_token
+      }));
+      return WizoMiner.allTokens;
+    } catch (error) {
+      console.error(`[ERROR] Failed to load token.json: ${error.message}`);
+      return [];
+    }
+  }
+
+  static async saveTokens(tokens) {
+    try {
+      const filePath = path.join(__dirname, 'token.json');
+      const data = tokens.map(t => ({ token: t.token, refresh_token: t.refresh_token }));
+      await fs.writeFile(filePath, JSON.stringify(data, null, 2));
+    } catch (error) {
+      console.error(`[ERROR] Failed to save token.json: ${error.message}`);
+    }
+  }
 
   static async loadProxies() {
     const proxies = [];
@@ -501,10 +615,10 @@ async function main() {
       if (miner.countdownInterval) clearInterval(miner.countdownInterval);
       if (miner.miningInterval) clearInterval(miner.miningInterval);
     });
-    miners = tokens.map((token, idx) => {
+    miners = tokens.map((tokenObj, idx) => {
       const proxyEntry = proxies[idx % proxies.length] || null;
       const proxy = proxyEntry && !proxyEntry.error ? { ...proxyEntry } : null;
-      const miner = new WizoMiner(token.token, proxy, token.id);
+      const miner = new WizoMiner(tokenObj.token, tokenObj.refresh_token, proxy, tokenObj.id);
       miner.uiScreen = screen;
       miner.accountPane = accountPane;
       miner.logPane = logPane;
@@ -520,7 +634,7 @@ async function main() {
       miners[activeIndex].refreshDisplay();
       miners.forEach(miner => miner.start());
     } else {
-      logPane.setContent('No valid tokens found in token.txt.\nPress \'q\' or Ctrl+C to exit.');
+      logPane.setContent('No valid tokens found in token.json.\nPress \'q\' or Ctrl+C to exit.');
       accountPane.setContent('');
       screen.render();
     }

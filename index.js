@@ -333,24 +333,6 @@ class WizoMiner {
     this.uiScreen.render();
   }
 
-  static async loadTokens() {
-    try {
-      const filePath = path.join(__dirname, 'token.txt');
-      const data = await fs.readFile(filePath, 'utf8');
-      const tokens = data.split('\n')
-        .map(line => line.trim())
-        .filter(line => line !== '')
-        .map((token, index) => ({ id: index + 1, token }));
-      if (!tokens.length) {
-        console.error('[ERROR] token.txt is empty');
-        return [];
-      }
-      return tokens;
-    } catch (error) {
-      console.error(`[ERROR] Failed to load token.txt: ${error.message}`);
-      return [];
-    }
-  }
 
   static async loadProxies() {
     const proxies = [];
